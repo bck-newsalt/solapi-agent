@@ -4,23 +4,14 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	_ "github.com/go-sql-driver/mysql"
-	"github.com/solapi/solapi-go"
-	"io/ioutil"
 	"os"
 	"strconv"
-	"time"
-)
 
-type DBConfig struct {
-	Provider string `json:"provider"`
-	DBName   string `json:"dbname"`
-	Table    string `json:"table"`
-	User     string `json:"user"`
-	Password string `json:"password"`
-	Host     string `json:"host"`
-	Port     int    `json:"port"`
-}
+	"github.com/bck-newsalt/solapi-agent/cmd/database"
+	"github.com/bck-newsalt/solapi-agent/cmd/logger"
+	_ "github.com/go-sql-driver/mysql"
+	"github.com/solapi/solapi-go"
+)
 
 type APIConfig struct {
 	APIKey    string `json:"apiKey"`
@@ -31,32 +22,15 @@ type APIConfig struct {
 	AppId     string `json:"AppId"`
 }
 
-var dbconf DBConfig
 var apiconf APIConfig
 
 var client *solapi.Client
 
-var db *sql.DB
+var basePath = "/opt/agent"
 
-var homedir = "/opt/agent"
-
-func getConnectionString(homedir string) (string, error) {
+func readAPIConfig(homedir string, apiconf *APIConfig) error {
 	var b []byte
-	fmt.Println(homedir)
-	b, err := ioutil.ReadFile(homedir + "/db.json")
-	if err != nil {
-		fmt.Println(err)
-		return "db.json 로딩 오류", err
-	}
-	_ = json.Unmarshal(b, &dbconf)
-	connectionString := fmt.Sprintf("%s:%s@tcp(%s:%d)/%s", dbconf.User, dbconf.Password, dbconf.Host, dbconf.Port, dbconf.DBName)
-	fmt.Println(connectionString)
-	return connectionString, nil
-}
-
-func getAPIConfig(homedir string, apiconf *APIConfig) error {
-	var b []byte
-	b, err := ioutil.ReadFile(homedir + "/config.json")
+	b, err := os.ReadFile(homedir + "/config.json")
 	if err != nil {
 		fmt.Println(err)
 		return err
@@ -79,7 +53,7 @@ func syncMsgStatus(messageIds []string) {
 	}
 
 	for _, res := range result.MessageList {
-		_, err = db.Exec("UPDATE msg SET result = json_set(result, '$.status', ?, '$.statusCode', ?, '$.statusMessage', ?), updatedAt = NOW() WHERE messageId = ?", res.Status, res.StatusCode, res.Reason, res.MessageId)
+		_, err = database.Db.Exec("UPDATE msg SET result = json_set(result, '$.status', ?, '$.statusCode', ?, '$.statusMessage', ?), updatedAt = NOW() WHERE messageId = ?", res.Status, res.StatusCode, res.Reason, res.MessageId)
 		if err != nil {
 			panic(err)
 		}
@@ -99,23 +73,17 @@ func syncMsgStatus(messageIds []string) {
 func main() {
 	agentHome := os.Getenv("AGENT_HOME")
 	if len(agentHome) > 0 {
-		homedir = agentHome
+		basePath = agentHome
 	}
 
 	var err error
 
-	connectionString, _ := getConnectionString(homedir)
-	fmt.Println("DB에 연결합니다 Connection String:", connectionString)
-
-	db, err = sql.Open("mysql", connectionString)
+	err = database.Connect(basePath)
 	if err != nil {
-		panic(err)
+		logger.Stdlog.Fatal(err)
 	}
-	db.SetConnMaxLifetime(time.Minute * 3)
-	db.SetMaxOpenConns(10)
-	db.SetMaxIdleConns(10)
 
-	err = getAPIConfig(homedir, &apiconf)
+	err = readAPIConfig(basePath, &apiconf)
 	if err != nil {
 		panic(err)
 	}
@@ -136,7 +104,7 @@ func main() {
 		"Prefix":    apiconf.Prefix,
 	}
 
-	rows, err := db.Query("SELECT id, messageId FROM msg WHERE sent = true AND status != 'COMPLETE'")
+	rows, err := database.Db.Query("SELECT id, messageId FROM msg WHERE sent = true AND status != 'COMPLETE'")
 	if err != nil {
 		fmt.Println("DB Query ERROR:", err)
 		return
