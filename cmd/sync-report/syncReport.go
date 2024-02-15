@@ -126,4 +126,9 @@ func main() {
 	if len(messageIds) > 0 {
 		syncMsgStatus(messageIds)
 	}
+
+	err = database.Close()
+	if err != nil {
+		logger.Stdlog.Fatal(err)
+	}
 }

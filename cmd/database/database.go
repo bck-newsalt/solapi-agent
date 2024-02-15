@@ -7,6 +7,7 @@ import (
 	"os"
 
 	"github.com/bck-newsalt/solapi-agent/cmd/database/mysql"
+	"github.com/bck-newsalt/solapi-agent/cmd/database/postgres"
 	"github.com/bck-newsalt/solapi-agent/cmd/logger"
 	"github.com/bck-newsalt/solapi-agent/cmd/types"
 )
@@ -47,18 +48,44 @@ func Connect(basePath string) error {
 	switch Dbconf.Provider {
 	case "mysql":
 		DbImpl = mysql.New()
+	case "postgres":
+		DbImpl = postgres.New()
+	}
+	if DbImpl != nil {
 		err = DbImpl.Connect(Dbconf)
 		if err != nil {
 			logger.Stdlog.Fatal(err)
 		}
-	case "postgres":
-		break
+		logger.Stdlog.Println("Database Connected!")
 	}
 	return nil
 }
 
+func Close() error {
+	var err error
+	if DbImpl != nil {
+		err = DbImpl.Close()
+		if err != nil {
+			logger.Stdlog.Fatal(err)
+		}
+		logger.Stdlog.Println("Database Closed!")
+	}
+	return err
+}
+
 type DBProviderImpl interface {
 	Connect(types.DBConfig) error
+	Close() error
 	Exec(query string, args ...any) (sql.Result, error)
 	Query(query string, args ...any) (*sql.Rows, error)
+
+	FindLast1DayScheduled() (*sql.Rows, error)
+	IncreseSendAttempts(id uint32) (sql.Result, error)
+	UpdateComplete(messageId string, groupId string, status string, statusCode string, statusMessage string, id uint32) (sql.Result, error)
+
+	FindLastReport() (*sql.Rows, error)
+	FindPollReport() (*sql.Rows, error)
+	IncreseReportAttempts(id uint32) (sql.Result, error)
+	UpdateResultByMessageId(status string, statusCode string, reason string, messageId string) (sql.Result, error)
+	UpdateFailed(statusCode string, statusMessage string, messageId string) (sql.Result, error)
 }

@@ -17,8 +17,6 @@ import (
 	"github.com/bck-newsalt/solapi-agent/cmd/logger"
 	"github.com/solapi/solapi-go"
 	"github.com/takama/daemon"
-
-	_ "github.com/go-sql-driver/mysql"
 )
 
 type APIConfig struct {
@@ -114,31 +112,46 @@ func (service *Service) Manage() (string, error) {
 	go pollMsg()
 	go pollResult()
 	go pollLastReport()
-	/*
-	  go func() {
-	    var rtm runtime.MemStats
-	    for {
-	      runtime.GC()
-	      time.Sleep(time.Millisecond * 300)
-	      runtime.ReadMemStats(&rtm)
-	      logger.Errlog.Println("Allow:", rtm.Alloc)
-	      logger.Errlog.Println("TotalAllow:", rtm.TotalAlloc)
-	      logger.Errlog.Println("Sys:", rtm.Sys)
-	      logger.Errlog.Println("Mallocs:", rtm.Mallocs)
-	      logger.Errlog.Println("Frees:", rtm.Frees)
-	    }
-	  }()
-	*/
 
-	for {
-		select {
-		case killSignal := <-interrupt:
-			logger.Errlog.Println("시스템 시그널이 감지되었습니다:", killSignal)
-			if killSignal == os.Interrupt {
-				return "Daemon was interrupted by system signal", nil
-			}
-			return "Daemon was killed", nil
+	// monitor mem
+	// go func() {
+	// 	var rtm runtime.MemStats
+	// 	for {
+	// 		runtime.GC()
+	// 		time.Sleep(time.Millisecond * 300)
+	// 		runtime.ReadMemStats(&rtm)
+	// 		logger.Errlog.Println("Allow:", rtm.Alloc)
+	// 		logger.Errlog.Println("TotalAllow:", rtm.TotalAlloc)
+	// 		logger.Errlog.Println("Sys:", rtm.Sys)
+	// 		logger.Errlog.Println("Mallocs:", rtm.Mallocs)
+	// 		logger.Errlog.Println("Frees:", rtm.Frees)
+	// 	}
+	// }()
+
+	// for-select
+	// for {
+	// 	select {
+	// receive from channel
+	// 	case killSignal := <-interrupt:
+	// 		logger.Errlog.Println("시스템 시그널이 감지되었습니다:", killSignal)
+	// 		if killSignal == os.Interrupt {
+	// 			return "Daemon was interrupted by system signal", nil
+	// 		}
+	// 		return "Daemon was killed", nil
+	// 	}
+	// }
+
+	// for-range, if channel closed,
+	for killSignal := range interrupt {
+		logger.Errlog.Println("시스템 시그널이 감지되었습니다:", killSignal)
+		err = database.Close()
+		if err != nil {
+			logger.Stdlog.Fatal(err)
 		}
+		if killSignal == os.Interrupt {
+			return "Daemon was interrupted by system signal", nil
+		}
+		return "Daemon was killed", nil
 	}
 
 	return usage, nil
@@ -161,7 +174,7 @@ func pollMsg() {
 	for {
 		// wait 1sec
 		time.Sleep(time.Second * 1)
-		rows, err := database.DbImpl.Query("SELECT id, payload FROM msg WHERE sent = false AND scheduledAt <= NOW() AND scheduledAt >= SUBDATE(NOW(), INTERVAL 24 HOUR) AND sendAttempts < 3 LIMIT 10000")
+		rows, err := database.DbImpl.FindLast1DayScheduled()
 		if err != nil {
 			logger.Errlog.Println("[메시지발송] DB Query ERROR:", err)
 			time.Sleep(time.Second * 5)
@@ -196,7 +209,7 @@ func pollMsg() {
 			}
 			logger.Stdlog.Printf("pollMsg - has message to send id: %d payload: %s\n", id, payload)
 			// _ = fmt.Sprintf("id: %u", id)
-			_, err = database.DbImpl.Exec("UPDATE msg SET sendAttempts = sendAttempts + 1 WHERE id = ?", id)
+			_, err = database.DbImpl.IncreseSendAttempts(id)
 			if err != nil {
 				logger.Errlog.Printf("update sendAttempts error: %v\n", err)
 				continue
@@ -250,7 +263,7 @@ func pollMsg() {
 				if res.StatusCode == "2000" {
 					status = "PENDING"
 				}
-				_, err = database.DbImpl.Exec("UPDATE msg SET result = json_object('messageId', ?, 'groupId', ?, 'status', ?, 'statusCode', ?, 'statusMessage', ?), sent = true WHERE id = ?", res.MessageId, groupId, status, res.StatusCode, res.StatusMessage, idList[i])
+				_, err = database.DbImpl.UpdateComplete(res.MessageId, groupId, status, res.StatusCode, res.StatusMessage, idList[i])
 				if err != nil {
 					logger.Errlog.Println(err)
 					continue
@@ -270,7 +283,7 @@ func pollMsg() {
 func pollLastReport() {
 	for {
 		time.Sleep(time.Second * 1)
-		rows, err := database.DbImpl.Query("SELECT id, messageId, statusCode FROM msg WHERE sent = true AND createdAt < SUBDATE(NOW(), INTERVAL 72 HOUR) AND status != 'COMPLETE' LIMIT 100")
+		rows, err := database.DbImpl.FindLastReport()
 		if err != nil {
 			logger.Errlog.Println("[마지막 리포트] DB Query ERROR:", err)
 			time.Sleep(time.Second * 60)
@@ -296,7 +309,7 @@ func pollLastReport() {
 func pollResult() {
 	for {
 		time.Sleep(time.Millisecond * 500)
-		rows, err := database.DbImpl.Query("SELECT id, messageId, statusCode FROM msg WHERE sent = true AND createdAt > SUBDATE(NOW(), INTERVAL 72 HOUR) AND updatedAt < SUBDATE(NOW(), INTERVAL (10 * (reportAttempts + 1)) SECOND) AND reportAttempts < 10 AND status != 'COMPLETE' LIMIT 100")
+		rows, err := database.DbImpl.FindPollReport()
 		if err != nil {
 			logger.Errlog.Println("[리포트 처리] DB Query ERROR:", err)
 			time.Sleep(time.Second * 10)
@@ -310,7 +323,7 @@ func pollResult() {
 		for rows.Next() {
 			_ = rows.Scan(&id, &messageId, &statusCode)
 
-			_, err = database.DbImpl.Exec("UPDATE msg SET reportAttempts = reportAttempts + 1, updatedAt = NOW() WHERE id = ?", id)
+			_, err = database.DbImpl.IncreseReportAttempts(id)
 			messageIds = append(messageIds, messageId)
 		}
 		if len(messageIds) > 0 {
@@ -336,13 +349,13 @@ func syncMsgStatus(messageIds []string, statusCode string, defaultCode string) {
 
 	for _, res := range result.MessageList {
 		if res.StatusCode != statusCode {
-			_, err = database.DbImpl.Exec("UPDATE msg SET result = json_set(result, '$.status', ?, '$.statusCode', ?, '$.statusMessage', ?), updatedAt = NOW() WHERE messageId = ?", res.Status, res.StatusCode, res.Reason, res.MessageId)
+			_, err = database.DbImpl.UpdateResultByMessageId(res.Status, res.StatusCode, res.Reason, res.MessageId)
 			if err != nil {
 				panic(err)
 			}
 		} else {
 			if defaultCode != "" {
-				_, err = database.DbImpl.Exec("UPDATE msg SET result = json_set(result, '$.status', 'COMPLETE', '$.statusCode', ?, '$.statusMessage', ?), updatedAt = NOW() WHERE messageId = ?", defaultCode, "전송시간 초과", res.MessageId)
+				_, err = database.DbImpl.UpdateFailed(defaultCode, "전송시간 초과", res.MessageId)
 			}
 		}
 	}
