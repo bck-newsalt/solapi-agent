@@ -4,18 +4,17 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"os"
-	"time"
 
-	logger "github.com/bck-newsalt/solapi-agent/cmd/logger"
-	types "github.com/bck-newsalt/solapi-agent/cmd/types"
+	"github.com/bck-newsalt/solapi-agent/cmd/database/mysql"
+	"github.com/bck-newsalt/solapi-agent/cmd/logger"
+	"github.com/bck-newsalt/solapi-agent/cmd/types"
 )
 
 var Dbconf types.DBConfig
-var Db *sql.DB
+var DbImpl DBProviderImpl
 
-func getConnectionString(basePath string) (string, error) {
+func ReadDBConfig(basePath string) (string, error) {
 	logger.Errlog.Printf("try, read %s/db.json\n", basePath)
 	var b []byte
 	b, err := os.ReadFile(basePath + "/db.json")
@@ -31,29 +30,35 @@ func getConnectionString(basePath string) (string, error) {
 	}
 
 	if Dbconf.Provider == "mysql" {
-		connectionString := fmt.Sprintf("%s:%s@tcp(%s:%d)/%s", Dbconf.User, Dbconf.Password, Dbconf.Host, Dbconf.Port, Dbconf.DBName)
-		return connectionString, nil
+		return "", nil
 	} else if Dbconf.Provider == "postgres" {
-		connectionString := fmt.Sprintf("%s:%s@tcp(%s:%d)/%s", Dbconf.User, Dbconf.Password, Dbconf.Host, Dbconf.Port, Dbconf.DBName)
-		return connectionString, nil
+		return "", nil
 	}
 
 	return "", errors.New("bad DB config")
 }
 
 func Connect(basePath string) error {
-	connectionString, err := getConnectionString(basePath)
+	_, err := ReadDBConfig(basePath)
 	if err != nil {
 		logger.Stdlog.Fatal(err)
 	}
-	logger.Errlog.Println("DB에 연결합니다 Connection String:", connectionString)
 
-	Db, err = sql.Open(Dbconf.Provider, connectionString)
-	if err != nil {
-		panic(err)
+	switch Dbconf.Provider {
+	case "mysql":
+		DbImpl = mysql.New()
+		err = DbImpl.Connect(Dbconf)
+		if err != nil {
+			logger.Stdlog.Fatal(err)
+		}
+	case "postgres":
+		break
 	}
-	Db.SetConnMaxLifetime(time.Minute * 3)
-	Db.SetMaxOpenConns(10)
-	Db.SetMaxIdleConns(10)
 	return nil
+}
+
+type DBProviderImpl interface {
+	Connect(types.DBConfig) error
+	Exec(query string, args ...any) (sql.Result, error)
+	Query(query string, args ...any) (*sql.Rows, error)
 }

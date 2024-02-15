@@ -24,6 +24,7 @@ func Create(basePath string) error {
 	})
 
 	Stdlog.Println("Logger Created!")
+	Errlog.Println("Logger Created!")
 
 	return nil
 }

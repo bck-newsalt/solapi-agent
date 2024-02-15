@@ -53,7 +53,7 @@ func syncMsgStatus(messageIds []string) {
 	}
 
 	for _, res := range result.MessageList {
-		_, err = database.Db.Exec("UPDATE msg SET result = json_set(result, '$.status', ?, '$.statusCode', ?, '$.statusMessage', ?), updatedAt = NOW() WHERE messageId = ?", res.Status, res.StatusCode, res.Reason, res.MessageId)
+		_, err = database.DbImpl.Exec("UPDATE msg SET result = json_set(result, '$.status', ?, '$.statusCode', ?, '$.statusMessage', ?), updatedAt = NOW() WHERE messageId = ?", res.Status, res.StatusCode, res.Reason, res.MessageId)
 		if err != nil {
 			panic(err)
 		}
@@ -104,7 +104,7 @@ func main() {
 		"Prefix":    apiconf.Prefix,
 	}
 
-	rows, err := database.Db.Query("SELECT id, messageId FROM msg WHERE sent = true AND status != 'COMPLETE'")
+	rows, err := database.DbImpl.Query("SELECT id, messageId FROM msg WHERE sent = true AND status != 'COMPLETE'")
 	if err != nil {
 		fmt.Println("DB Query ERROR:", err)
 		return

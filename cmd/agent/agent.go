@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"os/signal"
 	"runtime"
@@ -13,9 +14,11 @@ import (
 	"unsafe"
 
 	"github.com/bck-newsalt/solapi-agent/cmd/database"
-	logger "github.com/bck-newsalt/solapi-agent/cmd/logger"
+	"github.com/bck-newsalt/solapi-agent/cmd/logger"
 	"github.com/solapi/solapi-go"
 	"github.com/takama/daemon"
+
+	_ "github.com/go-sql-driver/mysql"
 )
 
 type APIConfig struct {
@@ -153,9 +156,12 @@ func readAPIConfig(homedir string, apiconf *APIConfig) error {
 }
 
 func pollMsg() {
+	logger.Stdlog.Println("pollMsg - loop begin")
+	// loop
 	for {
+		// wait 1sec
 		time.Sleep(time.Second * 1)
-		rows, err := database.Db.Query("SELECT id, payload FROM msg WHERE sent = false AND scheduledAt <= NOW() AND scheduledAt >= SUBDATE(NOW(), INTERVAL 24 HOUR) AND sendAttempts < 3 LIMIT 10000")
+		rows, err := database.DbImpl.Query("SELECT id, payload FROM msg WHERE sent = false AND scheduledAt <= NOW() AND scheduledAt >= SUBDATE(NOW(), INTERVAL 24 HOUR) AND sendAttempts < 3 LIMIT 10000")
 		if err != nil {
 			logger.Errlog.Println("[메시지발송] DB Query ERROR:", err)
 			time.Sleep(time.Second * 5)
@@ -178,7 +184,7 @@ func pollMsg() {
 				}
 				result, err := client.Messages.CreateGroup(params)
 				if err != nil {
-					logger.Errlog.Println(err)
+					logger.Errlog.Printf("CreateGroup error: %v\n", err)
 				}
 				groupId = result.GroupId
 			}
@@ -186,17 +192,18 @@ func pollMsg() {
 
 			err := rows.Scan(&id, &payload)
 			if err != nil {
-				logger.Errlog.Println(err)
+				logger.Errlog.Printf("row Scan error: %v\n", err)
 			}
-			_ = fmt.Sprintf("id: %u", id)
-			_, err = database.Db.Exec("UPDATE msg SET sendAttempts = sendAttempts + 1 WHERE id = ?", id)
+			logger.Stdlog.Printf("pollMsg - has message to send id: %d payload: %s\n", id, payload)
+			// _ = fmt.Sprintf("id: %u", id)
+			_, err = database.DbImpl.Exec("UPDATE msg SET sendAttempts = sendAttempts + 1 WHERE id = ?", id)
 			if err != nil {
-				logger.Errlog.Println(err)
+				logger.Errlog.Printf("update sendAttempts error: %v\n", err)
 				continue
 			}
 			err = json.Unmarshal([]byte(payload), &msgObj)
 			if err != nil {
-				logger.Errlog.Println(err)
+				logger.Errlog.Printf("Unmarshal error: %v\n", err)
 				continue
 			}
 
@@ -235,7 +242,7 @@ func pollMsg() {
 
 			result, err := client.Messages.AddGroupMessage(groupId, msgParams)
 			if err != nil {
-				logger.Errlog.Println(err)
+				logger.Errlog.Printf("AddGroupMessage error: %v\n", err)
 				continue
 			}
 			for i, res := range result.ResultList {
@@ -243,7 +250,7 @@ func pollMsg() {
 				if res.StatusCode == "2000" {
 					status = "PENDING"
 				}
-				_, err = database.Db.Exec("UPDATE msg SET result = json_object('messageId', ?, 'groupId', ?, 'status', ?, 'statusCode', ?, 'statusMessage', ?), sent = true WHERE id = ?", res.MessageId, groupId, status, res.StatusCode, res.StatusMessage, idList[i])
+				_, err = database.DbImpl.Exec("UPDATE msg SET result = json_object('messageId', ?, 'groupId', ?, 'status', ?, 'statusCode', ?, 'statusMessage', ?), sent = true WHERE id = ?", res.MessageId, groupId, status, res.StatusCode, res.StatusMessage, idList[i])
 				if err != nil {
 					logger.Errlog.Println(err)
 					continue
@@ -252,7 +259,7 @@ func pollMsg() {
 
 			groupInfo, err2 := client.Messages.SendGroup(groupId)
 			if err2 != nil {
-				logger.Errlog.Println(err2)
+				logger.Errlog.Printf("SendGroup error: %v\n", err2)
 				continue
 			}
 			printObj(groupInfo.Count)
@@ -263,7 +270,7 @@ func pollMsg() {
 func pollLastReport() {
 	for {
 		time.Sleep(time.Second * 1)
-		rows, err := database.Db.Query("SELECT id, messageId, statusCode FROM msg WHERE sent = true AND createdAt < SUBDATE(NOW(), INTERVAL 72 HOUR) AND status != 'COMPLETE' LIMIT 100")
+		rows, err := database.DbImpl.Query("SELECT id, messageId, statusCode FROM msg WHERE sent = true AND createdAt < SUBDATE(NOW(), INTERVAL 72 HOUR) AND status != 'COMPLETE' LIMIT 100")
 		if err != nil {
 			logger.Errlog.Println("[마지막 리포트] DB Query ERROR:", err)
 			time.Sleep(time.Second * 60)
@@ -289,7 +296,7 @@ func pollLastReport() {
 func pollResult() {
 	for {
 		time.Sleep(time.Millisecond * 500)
-		rows, err := database.Db.Query("SELECT id, messageId, statusCode FROM msg WHERE sent = true AND createdAt > SUBDATE(NOW(), INTERVAL 72 HOUR) AND updatedAt < SUBDATE(NOW(), INTERVAL (10 * (reportAttempts + 1)) SECOND) AND reportAttempts < 10 AND status != 'COMPLETE' LIMIT 100")
+		rows, err := database.DbImpl.Query("SELECT id, messageId, statusCode FROM msg WHERE sent = true AND createdAt > SUBDATE(NOW(), INTERVAL 72 HOUR) AND updatedAt < SUBDATE(NOW(), INTERVAL (10 * (reportAttempts + 1)) SECOND) AND reportAttempts < 10 AND status != 'COMPLETE' LIMIT 100")
 		if err != nil {
 			logger.Errlog.Println("[리포트 처리] DB Query ERROR:", err)
 			time.Sleep(time.Second * 10)
@@ -303,7 +310,7 @@ func pollResult() {
 		for rows.Next() {
 			_ = rows.Scan(&id, &messageId, &statusCode)
 
-			_, err = database.Db.Exec("UPDATE msg SET reportAttempts = reportAttempts + 1, updatedAt = NOW() WHERE id = ?", id)
+			_, err = database.DbImpl.Exec("UPDATE msg SET reportAttempts = reportAttempts + 1, updatedAt = NOW() WHERE id = ?", id)
 			messageIds = append(messageIds, messageId)
 		}
 		if len(messageIds) > 0 {
@@ -329,19 +336,20 @@ func syncMsgStatus(messageIds []string, statusCode string, defaultCode string) {
 
 	for _, res := range result.MessageList {
 		if res.StatusCode != statusCode {
-			_, err = database.Db.Exec("UPDATE msg SET result = json_set(result, '$.status', ?, '$.statusCode', ?, '$.statusMessage', ?), updatedAt = NOW() WHERE messageId = ?", res.Status, res.StatusCode, res.Reason, res.MessageId)
+			_, err = database.DbImpl.Exec("UPDATE msg SET result = json_set(result, '$.status', ?, '$.statusCode', ?, '$.statusMessage', ?), updatedAt = NOW() WHERE messageId = ?", res.Status, res.StatusCode, res.Reason, res.MessageId)
 			if err != nil {
 				panic(err)
 			}
 		} else {
 			if defaultCode != "" {
-				_, err = database.Db.Exec("UPDATE msg SET result = json_set(result, '$.status', 'COMPLETE', '$.statusCode', ?, '$.statusMessage', ?), updatedAt = NOW() WHERE messageId = ?", defaultCode, "전송시간 초과", res.MessageId)
+				_, err = database.DbImpl.Exec("UPDATE msg SET result = json_set(result, '$.status', 'COMPLETE', '$.statusCode', ?, '$.statusMessage', ?), updatedAt = NOW() WHERE messageId = ?", defaultCode, "전송시간 초과", res.MessageId)
 			}
 		}
 	}
 }
 
 func printObj(obj interface{}) {
+	// logger.Errlog.Println("printObj:")
 	var msgBytes []byte
 	msgBytes, err := json.MarshalIndent(obj, "", "  ")
 	if err != nil {
@@ -352,20 +360,26 @@ func printObj(obj interface{}) {
 }
 
 func init() {
+	// base path
 	agentHome := os.Getenv("AGENT_HOME")
 	if len(agentHome) > 0 {
 		basePath = agentHome
+	} else {
+		// pwd
+		dir, err := os.Getwd()
+		if err != nil {
+			log.Panicf("Getwd error: %v\n", err)
+		}
+		// fmt.Printf("pwd: %s\n", dir)
+		basePath = dir
 	}
+	log.Printf("init basePath: %s\n", basePath)
 
+	// logger
 	logger.Create(basePath)
 }
 
 func main() {
-	dir, err := os.Getwd()
-	if err != nil {
-		logger.Stdlog.Fatal(err)
-	}
-	fmt.Printf("pwd: %s\n", dir)
 
 	daemonType := daemon.SystemDaemon
 	goos := runtime.GOOS
@@ -373,7 +387,6 @@ func main() {
 	case "windows":
 		daemonType = daemon.SystemDaemon
 		logger.Stdlog.Println("OS: Windows")
-		basePath = dir
 	case "darwin":
 		daemonType = daemon.UserAgent
 		logger.Stdlog.Println("OS: MAC")
