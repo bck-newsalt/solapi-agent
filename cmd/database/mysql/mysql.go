@@ -36,6 +36,11 @@ func (s *MysqlSpec) Connect(dbconf types.DBConfig) error {
 	s.db.SetMaxOpenConns(10)
 	s.db.SetMaxIdleConns(10)
 
+	// ping
+	if err != nil || s.db.Ping() != nil {
+		logger.Errlog.Panicln(err.Error())
+	}
+
 	return nil
 }
 

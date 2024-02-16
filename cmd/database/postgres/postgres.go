@@ -41,6 +41,29 @@ func (s *PostgresSpec) Connect(dbconf types.DBConfig) error {
 	s.db.SetMaxOpenConns(10)
 	s.db.SetMaxIdleConns(10)
 
+	// ping
+	if err != nil || s.db.Ping() != nil {
+		logger.Errlog.Panicln(err.Error())
+	}
+
+	_, err = s.db.Exec("set search_path to sms, public;")
+	if err != nil {
+		logger.Errlog.Panicf("Unable to change search path: %v\n", err)
+	}
+
+	// db time
+	var dbTime, dbTimeUTC string
+	rows, err := s.db.Query("SELECT NOW(), NOW() at time zone 'UTC';")
+	if rows.Next() {
+		rows.Scan(&dbTime, &dbTimeUTC)
+	}
+	if err != nil {
+		logger.Errlog.Fatalf("QueryRow failed: %v\n", err)
+	}
+	_ = rows.Close()
+
+	fmt.Println("DB time:", dbTime, dbTimeUTC)
+
 	return nil
 }
 
@@ -69,15 +92,16 @@ func (s *PostgresSpec) Query(query string, args ...any) (*sql.Rows, error) {
 }
 
 func (s *PostgresSpec) FindLast1DayScheduled() (*sql.Rows, error) {
-	return s.Query("SELECT id, payload FROM sms.msg WHERE sent = false AND scheduledAt <= NOW() AND scheduledAt >= (NOW() - INTERVAL '24 HOURS') AND sendAttempts < 3 LIMIT 10000")
+	return s.Query("SELECT id, payload FROM sms.msg WHERE sent = false AND scheduledAt <= NOW() AND scheduledAt >= (NOW() - INTERVAL '24 HOURS') AND sendAttempts < 3 LIMIT 10000;")
 }
 
 func (s *PostgresSpec) IncreseSendAttempts(id uint32) (sql.Result, error) {
-	return s.Exec("UPDATE sms.msg SET sendAttempts = sendAttempts + 1 WHERE id = ?", id)
+	return s.Exec("UPDATE sms.msg SET sendAttempts = sendAttempts + 1 WHERE id = $1::integer", id)
 }
 
 func (s *PostgresSpec) UpdateComplete(messageId string, groupId string, status string, statusCode string, statusMessage string, id uint32) (sql.Result, error) {
-	return s.Exec("UPDATE sms.msg SET result = jsonb_build_object('messageId', ?, 'groupId', ?, 'status', ?, 'statusCode', ?, 'statusMessage', ?), sent = true WHERE id = ?",
+	// logger.Stdlog.Println("UpdateComplete params", "messageId: ", messageId, "groupId:", groupId, "status:", status, "statusCode:", statusCode, "statusMessage:", statusMessage, "id:", id)
+	return s.Exec("UPDATE sms.msg SET result = jsonb_build_object('messageId', $1::text, 'groupId', $2::text, 'status', $3::text, 'statusCode', $4::text, 'statusMessage', $5::text), sent = true WHERE id = $6::integer",
 		messageId, groupId, status, statusCode, statusMessage, id)
 }
 
@@ -90,13 +114,13 @@ func (s *PostgresSpec) FindPollReport() (*sql.Rows, error) {
 }
 
 func (s *PostgresSpec) IncreseReportAttempts(id uint32) (sql.Result, error) {
-	return s.Exec("UPDATE sms.msg SET reportAttempts = reportAttempts + 1, updatedAt = NOW() WHERE id = ?", id)
+	return s.Exec("UPDATE sms.msg SET reportAttempts = reportAttempts + 1, updatedAt = NOW() WHERE id = $1::integer", id)
 }
 
 func (s *PostgresSpec) UpdateResultByMessageId(status string, statusCode string, reason string, messageId string) (sql.Result, error) {
-	return s.Exec("UPDATE sms.msg SET result = coalesce(result, '{}'::json)::jsonb || jsonb_build_object('status', ?) || jsonb_build_object('statusCode', ?) || jsonb_build_object('statusMessage', ?), updatedAt = NOW() WHERE messageId = ?", status, statusCode, reason, messageId)
+	return s.Exec("UPDATE sms.msg SET result = coalesce(result, '{}'::json)::jsonb || jsonb_build_object('status', $1::text) || jsonb_build_object('statusCode', $2::text) || jsonb_build_object('statusMessage', $3::text), updatedAt = NOW() WHERE messageId = $4::text", status, statusCode, reason, messageId)
 }
 
 func (s *PostgresSpec) UpdateFailed(statusCode string, statusMessage string, messageId string) (sql.Result, error) {
-	return s.Exec("UPDATE sms.msg SET result = coalesce(result, '{}'::json)::jsonb || jsonb_build_object('status', 'COMPLETE') || jsonb_build_object('statusCode', ?) || jsonb_build_object('statusMessage', ?), updatedAt = NOW() WHERE messageId = ?", statusCode, statusMessage, messageId)
+	return s.Exec("UPDATE sms.msg SET result = coalesce(result, '{}'::json)::jsonb || jsonb_build_object('status', 'COMPLETE') || jsonb_build_object('statusCode', $1::text) || jsonb_build_object('statusMessage', $2::text), updatedAt = NOW() WHERE messageId = $3::text", statusCode, statusMessage, messageId)
 }

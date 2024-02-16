@@ -181,6 +181,8 @@ func pollMsg() {
 			continue
 		}
 
+		// logger.Stdlog.Println("FindLast1DayScheduled rows:", rows)
+
 		var messageList []interface{}
 		var groupId string
 
@@ -188,6 +190,7 @@ func pollMsg() {
 		var count = 0
 		var idList []uint32
 		for rows.Next() {
+			// logger.Stdlog.Println("pollMsg begin process 1message")
 			var payload string
 			var msgObj map[string]interface{}
 			if count == 0 {
@@ -199,6 +202,7 @@ func pollMsg() {
 				if err != nil {
 					logger.Errlog.Printf("CreateGroup error: %v\n", err)
 				}
+				logger.Stdlog.Printf("CreateGroup result: %v\n", result)
 				groupId = result.GroupId
 			}
 			count++
@@ -248,7 +252,16 @@ func pollMsg() {
 			messageList = append(messageList, msgObj)
 			idList = append(idList, id)
 		}
-		_ = rows.Close()
+
+		if err := rows.Err(); err != nil {
+			logger.Errlog.Fatalln("[메시지발송] DB rows.Err() ERROR:", err)
+		}
+
+		err = rows.Close()
+		if err != nil {
+			logger.Errlog.Fatalln("[메시지발송] DB rows.Close() ERROR:", err)
+		}
+
 		if len(messageList) > 0 {
 			var msgParams = make(map[string]interface{})
 			msgParams["messages"] = messageList
@@ -265,7 +278,7 @@ func pollMsg() {
 				}
 				_, err = database.DbImpl.UpdateComplete(res.MessageId, groupId, status, res.StatusCode, res.StatusMessage, idList[i])
 				if err != nil {
-					logger.Errlog.Println(err)
+					logger.Errlog.Println("UpdateComplete error:", err)
 					continue
 				}
 			}
